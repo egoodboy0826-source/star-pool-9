@@ -1,1 +1,370 @@
 
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>明星 9 號球撞球</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101319;color:#fff;font-family:system-ui,"Microsoft JhengHei",sans-serif}
+header{text-align:center;padding:12px 8px;background:linear-gradient(#292d34,#111318);border-bottom:1px solid #92703c}
+h1{font-size:clamp(20px,4vw,30px);margin:0;color:#f5ce70}
+header p{margin:4px 0 0;font-size:13px;color:#c9cdd4}
+main{max-width:1200px;margin:auto;padding:10px}
+.toolbar,.status,.controls{display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap;margin:9px 0}
+button{border:1px solid #696d76;border-radius:9px;background:linear-gradient(#343943,#20242b);color:white;padding:10px 14px;font-size:14px;cursor:pointer}
+button.active{background:#075bb9;border-color:#5bb6ff}
+button:disabled{opacity:.4}
+.status{justify-content:space-between;background:#1c2027;padding:10px 14px;border-radius:10px;font-size:14px}
+#message{color:#ffda84;font-weight:bold}
+.table-wrap{position:relative;width:100%;overflow:hidden;border-radius:12px;box-shadow:0 12px 30px #000a}
+canvas{display:block;width:100%;height:auto;touch-action:none}
+.controls{background:#1b1e24;border:1px solid #383c43;border-radius:10px;padding:12px}
+.controls label{display:flex;align-items:center;gap:8px;font-size:14px}
+input[type=range]{width:min(220px,45vw);accent-color:#ffcc54}
+.note{text-align:center;font-size:12px;color:#adb3bd;line-height:1.7;margin:12px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>★ 明星 9 號球 ★</h1>
+  <p>瞄準、控制力道，先碰最小號球，挑戰一桿清台！</p>
+</header>
+<main>
+  <div class="toolbar">
+    <button id="solo" class="active">👤 單人對電腦</button>
+    <button id="two">👥 雙人模式</button>
+    <button id="new">↻ 新遊戲</button>
+    <button id="sound">🔊 音效：開</button>
+  </div>
+  <div class="status">
+    <span id="turn">玩家 1 的回合</span>
+    <span>目標球：<b id="target">1</b></span>
+    <span id="message">拖曳瞄準，再放開擊球</span>
+  </div>
+  <div class="table-wrap">
+    <canvas id="game" width="1000" height="560"></canvas>
+  </div>
+  <div class="controls">
+    <label>擊球力道 <input id="power" type="range" min="10" max="100" value="55"><b id="powerText">55%</b></label>
+    <button id="place" hidden>放置白球</button>
+  </div>
+  <p class="note">
+    操作：在白球附近按住，往想擊球的反方向拖曳，再放開。<br>
+    犯規後可把白球放在桌面上。手機請直接用手指操作。<br>
+    球面使用內建的虛構人物肖像風格表情，不需外部圖片。
+  </p>
+</main>
+<script>
+"use strict";
+
+const canvas = document.querySelector("#game");
+const ctx = canvas.getContext("2d");
+const W=1000,H=560;
+const table={x:58,y:55,w:884,h:450};
+const R=13, friction=.991, rail=.91;
+const pockets=[
+  [table.x,table.y],[W/2,table.y],[table.x+table.w,table.y],
+  [table.x,table.y+table.h],[W/2,table.y+table.h],
+  [table.x+table.w,table.y+table.h]
+];
+const colors={1:"#f5d21a",2:"#2388ee",3:"#e52b38",4:"#8d42d9",
+  5:"#f28a19",6:"#209e54",7:"#9e202a",8:"#17191e",9:"#f3d21c"};
+const faces=["👩🏻‍🎤","👨🏻‍🎤","👩🏼","👩🏻‍🎨","👨🏽","👩🏽‍🎤","👩🏻","👨🏻‍🎨","👩🏼‍🎤"];
+let balls=[], mode="solo", turn=0, moving=false, aim=null;
+let gameOver=false, ballInHand=false, soundOn=true, lastTime=0;
+let shot={first:null,pocketed:[],cueScratch:false};
+let cueAngle=0, currentPower=55;
+const $=s=>document.querySelector(s);
+
+function makeBall(n,x,y){
+  return {n,x,y,vx:0,vy:0,spin:0,alive:true,
+    face:n===0?"🙂":faces[(n-1)%faces.length]};
+}
+function reset(){
+  balls=[];
+  balls.push(makeBall(0,table.x+table.w*.25,table.y+table.h*.5));
+  // 九號球菱形球陣
+  const cx=table.x+table.w*.70,cy=table.y+table.h*.5;
+  const positions=[
+    [0,0],[1,-1],[1,1],[2,-2],[2,0],[2,2],
+    [3,-1],[3,1],[4,0]
+  ];
+  const nums=[1,2,3,4,9,5,6,7,8];
+  positions.forEach((p,i)=>{
+    balls.push(makeBall(nums[i],cx+p[0]*R*2.15,cy+p[1]*R*2.15));
+  });
+  turn=0;moving=false;gameOver=false;ballInHand=false;aim=null;
+  shot={first:null,pocketed:[],cueScratch:false};
+  message("拖曳白球瞄準，再放開擊球");
+  updateUI();draw();
+}
+function message(t){$("#message").textContent=t}
+function lowest(){
+  const live=balls.filter(b=>b.alive&&b.n>0).map(b=>b.n);
+  return live.length?Math.min(...live):null;
+}
+function cue(){return balls.find(b=>b.n===0)}
+function updateUI(){
+  $("#turn").textContent=mode==="solo"&&turn===1?"電腦的回合":`玩家 ${turn+1} 的回合`;
+  $("#target").textContent=lowest()??"—";
+  $("#place").hidden=!ballInHand;
+  $("#solo").classList.toggle("active",mode==="solo");
+  $("#two").classList.toggle("active",mode==="two");
+}
+function startShot(){
+  shot={first:null,pocketed:[],cueScratch:false};
+  moving=true;aim=null;
+}
+function foul(reason){
+  ballInHand=true;
+  turn=1-turn;
+  message("犯規："+reason+"，對手可自由放置白球");
+  updateUI();
+}
+function endShot(){
+  moving=false;
+  const c=cue();
+  if(shot.cueScratch||!shot.first||shot.first!==lowestAtStart){
+    foul(shot.cueScratch?"白球落袋":"未先碰到最小號球");
+    return;
+  }
+  if(shot.pocketed.includes(9)){
+    gameOver=true;
+    message("🎉 合法打進 9 號球！"+(turn===0?"玩家 1":"玩家 2/電腦")+" 獲勝！");
+    updateUI();return;
+  }
+  if(shot.pocketed.length===0){
+    turn=1-turn;
+    message("沒有進球，換對手");
+  }else{
+    message("漂亮！有球進袋，繼續擊球");
+  }
+  updateUI();
+  if(mode==="solo"&&turn===1&&!gameOver){
+    setTimeout(computerShot,650);
+  }
+}
+let lowestAtStart=1;
+
+function shoot(angle,power){
+  if(moving||gameOver||ballInHand)return;
+  const c=cue();
+  if(!c||!c.alive)return;
+  lowestAtStart=lowest();
+  if(lowestAtStart===null)return;
+  startShot();
+  const speed=power*0.115;
+  c.vx=Math.cos(angle)*speed;
+  c.vy=Math.sin(angle)*speed;
+  c.spin=Math.sin(angle)*.8;
+  if(soundOn)beep(150,.035);
+  lastTime=performance.now();
+  requestAnimationFrame(loop);
+}
+function computerShot(){
+  if(mode!=="solo"||turn!==1||moving||gameOver)return;
+  const c=cue(),t=balls.find(b=>b.n===lowest()&&b.alive);
+  if(!c||!t)return;
+  // 普通難度：嘗試把目標球打向最近的袋口
+  let best=null,bestD=Infinity;
+  for(const p of pockets){
+    const dx=p[0]-t.x,dy=p[1]-t.y,d=Math.hypot(dx,dy);
+    if(d<bestD){bestD=d;best={x:dx/d,y:dy/d};}
+  }
+  const aimX=t.x-best.x*R*2.15,aimY=t.y-best.y*R*2.15;
+  const error=(Math.random()-.5)*.16;
+  const angle=Math.atan2(aimY-c.y,aimX-c.x)+error;
+  shoot(angle,48+Math.random()*23);
+}
+function beep(freq,duration){
+  try{
+    const a=new (window.AudioContext||window.webkitAudioContext)();
+    const o=a.createOscillator(),g=a.createGain();
+    o.frequency.value=freq;g.gain.value=.035;o.connect(g);g.connect(a.destination);
+    o.start();g.gain.exponentialRampToValueAtTime(.001,a.currentTime+duration);
+    o.stop(a.currentTime+duration);
+  }catch(e){}
+}
+function step(){
+  let any=false;
+  for(const b of balls){
+    if(!b.alive)continue;
+    b.x+=b.vx;b.y+=b.vy;
+    b.vx*=friction;b.vy*=friction;b.spin*=.98;
+    if(Math.abs(b.vx)+Math.abs(b.vy)>.035)any=true;
+    else {b.vx=0;b.vy=0}
+    // 桌邊反彈
+    const left=table.x+R,right=table.x+table.w-R;
+    const top=table.y+R,bottom=table.y+table.h-R;
+    if(b.x<left&&b.y>table.y+22&&b.y<table.y+table.h-22){b.x=left;b.vx=Math.abs(b.vx)*rail}
+    if(b.x>right&&b.y>table.y+22&&b.y<table.y+table.h-22){b.x=right;b.vx=-Math.abs(b.vx)*rail}
+    if(b.y<top&&b.x>table.x+22&&b.x<table.x+table.w-22){b.y=top;b.vy=Math.abs(b.vy)*rail}
+    if(b.y>bottom&&b.x>table.x+22&&b.x<table.x+table.w-22){b.y=bottom;b.vy=-Math.abs(b.vy)*rail}
+    // 球落袋
+    for(const p of pockets){
+      if(Math.hypot(b.x-p[0],b.y-p[1])<23){
+        b.alive=false;b.vx=b.vy=0;
+        if(b.n===0)shot.cueScratch=true;
+        else shot.pocketed.push(b.n);
+        break;
+      }
+    }
+  }
+  // 球與球碰撞
+  for(let i=0;i<balls.length;i++){
+    const a=balls[i];if(!a.alive)continue;
+    for(let j=i+1;j<balls.length;j++){
+      const b=balls[j];if(!b.alive)continue;
+      let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);
+      if(d===0){dx=.01;d=.01}
+      if(d<R*2){
+        if(a.n===0&&shot.first===null)shot.first=b.n;
+        if(b.n===0&&shot.first===null)shot.first=a.n;
+        const nx=dx/d,ny=dy/d,overlap=R*2-d;
+        a.x-=nx*overlap/2;a.y-=ny*overlap/2;
+        b.x+=nx*overlap/2;b.y+=ny*overlap/2;
+        const rel=(b.vx-a.vx)*nx+(b.vy-a.vy)*ny;
+        if(rel<0){
+          const impulse=-rel*.96/2;
+          a.vx-=impulse*nx;a.vy-=impulse*ny;
+          b.vx+=impulse*nx;b.vy+=impulse*ny;
+        }
+      }
+    }
+  }
+  return any;
+}
+function loop(now){
+  const any=step();
+  draw();
+  if(any){
+    requestAnimationFrame(loop);
+  }else{
+    // 消除微小殘速
+    balls.forEach(b=>{if(Math.hypot(b.vx,b.vy)<.08)b.vx=b.vy=0});
+    const still=balls.some(b=>b.alive&&Math.hypot(b.vx,b.vy)>.02);
+    if(still)requestAnimationFrame(loop);
+    else endShot();
+  }
+}
+function drawTable(){
+  ctx.clearRect(0,0,W,H);
+  const wood=ctx.createLinearGradient(0,0,W,H);
+  wood.addColorStop(0,"#70401e");wood.addColorStop(.45,"#b7773d");wood.addColorStop(1,"#482516");
+  ctx.fillStyle=wood;ctx.fillRect(0,0,W,H);
+  // 木紋
+  ctx.strokeStyle="#ffffff12";ctx.lineWidth=2;
+  for(let y=8;y<H;y+=14){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y+Math.sin(y)*5);ctx.stroke()}
+  ctx.fillStyle="#24211f";ctx.fillRect(table.x-8,table.y-8,table.w+16,table.h+16);
+  const felt=ctx.createLinearGradient(0,table.y,0,table.y+table.h);
+  felt.addColorStop(0,"#0875a9");felt.addColorStop(.5,"#075e91");felt.addColorStop(1,"#064b77");
+  ctx.fillStyle=felt;ctx.fillRect(table.x,table.y,table.w,table.h);
+  ctx.strokeStyle="#43a2c7";ctx.lineWidth=5;ctx.strokeRect(table.x+3,table.y+3,table.w-6,table.h-6);
+  pockets.forEach(p=>{
+    ctx.beginPath();ctx.fillStyle="#080a0e";ctx.arc(p[0],p[1],22,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.strokeStyle="#b2a18b";ctx.lineWidth=3;ctx.arc(p[0],p[1],22,0,Math.PI*2);ctx.stroke();
+  });
+}
+function drawBall(b){
+  if(!b.alive)return;
+  ctx.save();
+  ctx.translate(b.x,b.y);
+  ctx.shadowColor="#000b";ctx.shadowBlur=9;ctx.shadowOffsetY=5;
+  const g=ctx.createRadialGradient(-5,-7,2,0,0,R+3);
+  g.addColorStop(0,"#fff");g.addColorStop(.22,b.n===0?"#fff":colors[b.n]);
+  g.addColorStop(.78,b.n===0?"#e8e8e8":colors[b.n]);g.addColorStop(1,"#181a20");
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(0,0,R,0,Math.PI*2);ctx.fill();
+  ctx.shadowColor="transparent";ctx.shadowBlur=0;ctx.shadowOffsetY=0;
+  // 人物肖像圓窗
+  if(b.n!==0){
+    ctx.save();ctx.beginPath();ctx.arc(0,0,8.5,0,Math.PI*2);ctx.clip();
+    ctx.fillStyle="#f5d9c3";ctx.fillRect(-9,-9,18,18);
+    ctx.font="15px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText(b.face,0,1);
+    ctx.restore();
+    ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(8,7,6.5,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#111";ctx.font="bold 9px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText(b.n,8,7);
+  }else{
+    ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(0,0,6,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#333";ctx.font="8px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("YOU",0,0);
+  }
+  ctx.restore();
+}
+function drawCue(){
+  const c=cue();
+  if(!c||!c.alive||moving||gameOver||ballInHand)return;
+  let a=aim?Math.atan2(aim.y-c.y,aim.x-c.x):cueAngle;
+  // 瞄準線
+  ctx.save();ctx.setLineDash([7,7]);ctx.strokeStyle="#fff9";ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(c.x,c.y);ctx.lineTo(c.x+Math.cos(a)*180,c.y+Math.sin(a)*180);ctx.stroke();
+  ctx.setLineDash([]);
+  // 球桿位於白球反方向
+  const power=currentPower/100;
+  const x1=c.x-Math.cos(a)*(R+5),y1=c.y-Math.sin(a)*(R+5);
+  const x2=c.x-Math.cos(a)*(80+power*45),y2=c.y-Math.sin(a)*(80+power*45);
+  ctx.lineCap="round";ctx.lineWidth=7;ctx.strokeStyle="#c38b4c";
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  ctx.lineWidth=3;ctx.strokeStyle="#f0d7a5";
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  ctx.restore();
+}
+function draw(){
+  drawTable();
+  balls.forEach(drawBall);
+  drawCue();
+  if(ballInHand){
+    ctx.fillStyle="#fff";ctx.font="bold 17px sans-serif";ctx.textAlign="center";
+    ctx.fillText("點擊桌面放置白球",W/2,30);
+  }
+}
+function point(e){
+  const r=canvas.getBoundingClientRect();
+  return {x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height};
+}
+let dragging=false;
+canvas.addEventListener("pointerdown",e=>{
+  if(gameOver||moving||(mode==="solo"&&turn===1))return;
+  const p=point(e),c=cue();
+  if(ballInHand){
+    if(p.x<table.x+R||p.x>table.x+table.w-R||p.y<table.y+R||p.y>table.y+table.h-R)return;
+    if(balls.some(b=>b.alive&&b.n!==0&&Math.hypot(b.x-p.x,b.y-p.y)<R*2+2))return;
+    c.x=p.x;c.y=p.y;c.alive=true;ballInHand=false;updateUI();message("白球已放置，請瞄準");draw();return;
+  }
+  if(!c||!c.alive||Math.hypot(p.x-c.x,p.y-c.y)>65)return;
+  dragging=true;aim=p;canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove",e=>{
+  if(!dragging)return;
+  const p=point(e),c=cue();aim={x:2*c.x-p.x,y:2*c.y-p.y};
+  cueAngle=Math.atan2(aim.y-c.y,aim.x-c.x);draw();
+});
+canvas.addEventListener("pointerup",e=>{
+  if(!dragging)return;
+  dragging=false;
+  const c=cue(),p=point(e);
+  const dx=c.x-p.x,dy=c.y-p.y;
+  cueAngle=Math.atan2(dy,dx);
+  const dragPower=Math.min(100,Math.max(10,Math.hypot(dx,dy)*1.25));
+  currentPower=dragPower;
+  $("#power").value=dragPower;$("#powerText").textContent=Math.round(dragPower)+"%";
+  aim=null;shoot(cueAngle,dragPower);draw();
+});
+$("#power").addEventListener("input",e=>{
+  currentPower=+e.target.value;$("#powerText").textContent=currentPower+"%";draw();
+});
+$("#solo").onclick=()=>{mode="solo";turn=0;reset()};
+$("#two").onclick=()=>{mode="two";turn=0;reset()};
+$("#new").onclick=reset;
+$("#sound").onclick=()=>{
+  soundOn=!soundOn;$("#sound").textContent=soundOn?"🔊 音效：開":"🔇 音效：關";
+};
+$("#place").onclick=()=>message("請在桌面內點擊你想放置白球的位置");
+reset();
+</script>
+</body>
+</html>
+
